@@ -1,0 +1,23 @@
+#version 400 core
+layout (location = 0) in vec3 in_pos;
+
+//Globals
+uniform mat4 proj;
+uniform mat4 view;
+
+out float logz;
+out vec3 pos_out;
+
+
+const float near = 1.0;
+const float far = 35000000000.0;
+const float C = 0; //resolution near the camera, for the logarithmic depth function
+
+void main(void) {
+	gl_Position = proj * view * vec4(in_pos, 1.0);
+    const float FC = 1.0/log(far*C + 1);
+
+    //logz = gl_Position.w*C + 1;  //version with fragment code
+
+    pos_out = in_pos;
+}

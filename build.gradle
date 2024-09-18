@@ -1,0 +1,92 @@
+plugins{
+    id 'com.github.johnrengelman.shadow' version '7.1.0'
+}
+
+
+
+apply plugin: 'java'
+apply plugin: 'maven-publish'
+apply plugin: 'application'
+apply plugin: 'eclipse'
+apply plugin: 'idea'
+
+
+
+version = '1.0.0-SNAPSHOT'
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+
+allprojects {
+    gradle.projectsEvaluated {
+        tasks.withType(JavaCompile) {
+            options.compilerArgs << "-Xlint:unchecked"
+        }
+    }
+}
+
+tasks.withType(JavaCompile) {
+    options.encoding = 'UTF-8'
+}
+
+application {
+    // Replace 'your.main.Class' with your actual main class
+    mainClassName = 'Main'
+    try {
+        if (libPath) {
+            applicationDefaultJvmArgs = ["-Dimgui.library.path=$libPath"]
+        }
+    } catch (ignored) {
+        // ignore
+    }
+}
+
+shadowJar {
+    archiveBaseName.set('PlanetGame')
+    archiveVersion.set('1.0.0')
+    archiveClassifier.set('')
+    manifest {
+        attributes 'Main-Class': application.mainClassName
+    }
+}
+
+ext {
+    lwjglVersion = '3.3.3'
+    imguiVersion = "1.86.11"
+}
+
+repositories {
+    mavenCentral()
+    maven { url "https://raw.github.com/SpinyOwl/repo/releases" }
+    maven { url "https://oss.sonatype.org/content/repositories/snapshots/" }
+    maven { url "https://raw.github.com/SpinyOwl/repo/snapshots" }
+}
+
+dependencies {
+    implementation group: 'org.joml', name: 'joml', version: '1.9.22'
+    implementation group: 'org.lwjgl', name: 'lwjgl', version: '3.2.1'
+    implementation group: 'org.lwjgl', name: 'lwjgl-glfw', version: '3.2.3'
+    implementation group: 'org.lwjgl', name: 'lwjgl-opengl', version: '3.2.3'
+    implementation group: 'org.lwjgl', name: 'lwjgl-stb', version: '3.2.3'
+    implementation group: 'org.lwjgl', name: 'lwjgl', version:'3.2.1', classifier:'natives-windows'
+    implementation group: 'org.lwjgl', name: 'lwjgl-opengl', version:'3.2.3', classifier:'natives-windows'
+    implementation group: 'org.lwjgl', name: 'lwjgl-glfw', version:'3.2.3', classifier:'natives-windows'
+    implementation group: 'org.lwjgl', name: 'lwjgl-stb', version:'3.2.3', classifier:'natives-windows'
+
+    implementation "io.github.spair:imgui-java-binding:$imguiVersion"
+    implementation "io.github.spair:imgui-java-lwjgl3:$imguiVersion"
+    implementation "io.github.spair:imgui-java-app:$imguiVersion"
+    implementation "io.github.spair:imgui-java-natives-linux:$imguiVersion"
+
+    implementation group: 'com.google.guava', name: 'guava', version: '11.0.2'
+    implementation group: 'org.liquidengine', name: 'legui', version: '1.4.0', changing: true
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ["src/main/java", "src/main/resources"]
+        }
+    }
+}

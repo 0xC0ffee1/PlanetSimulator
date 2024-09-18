@@ -1,0 +1,47 @@
+#version 440 core
+
+layout (location = 0) in vec3 position;
+layout (location = 1) in vec2 texCoord;
+layout (location = 2) in vec3 normal;
+
+out float visibility;
+out vec4 clipSpace;
+out vec2 textureCoords;
+out vec3 toLightVector;
+out vec3 toCameraVector;
+
+uniform mat4 viewMatrix;
+uniform mat4 transformationMatrix;
+uniform bool isEyeInWater;
+uniform mat4 projectionMatrix;
+uniform vec3 lightPosition;
+uniform float time;
+uniform vec3 cameraPos;
+
+out float time_f;
+uniform vec4 plane;
+
+const float tiling = 0.1;
+
+//fog constants
+const float density = 0.000;
+const float gradient = 3;
+
+
+
+void main(void){
+    vec4 worldPosition = transformationMatrix * vec4(position.x,position.y,position.z, 1);
+    vec4 positionRelativeToCam = viewMatrix *  worldPosition;
+    gl_ClipDistance[0] = dot(worldPosition, plane);
+    clipSpace = projectionMatrix * positionRelativeToCam;
+    gl_Position = clipSpace + time*0;
+    time_f = time;
+    toLightVector = lightPosition - worldPosition.xyz;
+    toCameraVector = cameraPos - worldPosition.xyz;
+
+    float distance = length(positionRelativeToCam.xyz);
+    visibility = exp(-pow((distance*density), gradient));
+    visibility = clamp(visibility, 0.0, 1.0);
+
+    textureCoords = vec2(position.x/2.0 + 0.5, position.z/2.0 + 0.5) * tiling;
+}

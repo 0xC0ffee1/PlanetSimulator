@@ -1,0 +1,10 @@
+#version 400 core
+in float logz;
+in vec3 pos_out;
+
+out vec4 gl_FragColor;
+
+void main(void) {
+
+    gl_FragColor = vec4(pos_out,1);
+}

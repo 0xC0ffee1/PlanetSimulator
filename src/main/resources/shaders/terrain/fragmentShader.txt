@@ -1,0 +1,279 @@
+#version 440 core
+#define PI 3.14159265359
+#extension GL_ARB_conservative_depth : enable
+
+#define saturate(a) clamp( a, 0.0, 1.0 )
+
+layout(depth_less) out float gl_FragDepth;
+
+in vec2 outTexCoord;
+in float visibility;
+in vec3 surfaceNormal;
+in vec3 toLightVector;
+in vec4 outWorldPosition;
+in vec4 outWorldPosition2;
+in vec3 toCameraVector;
+in float texSlice;
+in float logz;
+
+in vec3 vVSPos;
+
+out vec4 out_Colour;
+
+uniform mat4 transformationMatrix;
+uniform sampler2DArray texArray;
+uniform sampler2DArray normalMapArray;
+uniform sampler2DArray roughnessArray;
+uniform sampler2DArray metalArray;
+uniform sampler2DArray occlusionArray;
+uniform vec3 lightColour;
+uniform vec3 skyColour;
+uniform vec3 cameraPos;
+uniform float radius;
+uniform vec3 planetPos;
+
+uniform int mainTexID;
+
+uniform sampler2D noiseMap;
+
+const float _TRI_SCALE = 10.0;
+
+float sum( vec3 v ) { return v.x+v.y+v.z; }
+
+const float farplane = 35000000000.0;
+
+const float Fcoef = 2.0 / log2(farplane + 1.0);
+
+
+
+vec4 hash4( vec2 p ) { return fract(sin(vec4( 1.0+dot(p,vec2(37.0,17.0)),
+                                              2.0+dot(p,vec2(11.0,47.0)),
+                                              3.0+dot(p,vec2(41.0,29.0)),
+                                              4.0+dot(p,vec2(23.0,31.0))))*103.0); }
+
+vec4 texture_UV(in sampler2DArray srcTexture, in vec3 x) {
+  float k = texture(noiseMap, 0.0025*x.xy).x; // cheap (cache friendly) lookup
+  float l = k*8.0;
+  float f = fract(l);
+
+  float ia = floor(l+0.5); // suslik's method (see comments)
+  float ib = floor(l);
+  f = min(f, 1.0-f)*2.0;
+  vec2 offa = sin(vec2(3.0,7.0)*ia); // can replace with any other hash
+  vec2 offb = sin(vec2(3.0,7.0)*ib); // can replace with any other hash
+  vec4 cola = texture(srcTexture, vec3(x.xy + offa, x.z));
+  vec4 colb = texture(srcTexture, vec3(x.xy + offb, x.z));
+  return mix(cola, colb, smoothstep(0.2,0.8,f-0.1*sum(cola.xyz-colb.xyz)));
+}
+
+vec4 _Triplanar_UV(vec3 pos, vec3 normal, float texSlice, sampler2DArray tex) {
+  vec4 dx = texture_UV(tex, vec3(pos.zy / _TRI_SCALE, texSlice));
+  vec4 dy = texture_UV(tex, vec3(pos.xz / _TRI_SCALE, texSlice));
+  vec4 dz = texture_UV(tex, vec3(pos.xy / _TRI_SCALE, texSlice));
+  vec3 weights = abs(normal.xyz);
+  weights = weights / (weights.x + weights.y + weights.z);
+  return dx * weights.x + dy * weights.y + dz * weights.z;
+}
+vec4 _TriplanarN_UV(vec3 pos, vec3 normal, float texSlice, sampler2DArray tex) {
+  // Tangent Reconstruction
+  // Triplanar uvs
+  vec2 uvX = pos.zy; // x facing plane
+  vec2 uvY = pos.xz; // y facing plane
+  vec2 uvZ = pos.xy; // z facing plane
+  // Tangent space normal maps
+  vec3 tx = texture_UV(tex, vec3(uvX / _TRI_SCALE, texSlice)).xyz * vec3(2,2,2) - vec3(1,1,1);
+  vec3 ty = texture_UV(tex, vec3(uvY / _TRI_SCALE, texSlice)).xyz * vec3(2,2,2) - vec3(1,1,1);
+  vec3 tz = texture_UV(tex, vec3(uvZ / _TRI_SCALE, texSlice)).xyz * vec3(2,2,2) - vec3(1,1,1);
+  vec3 weights = abs(normal.xyz);
+  weights = weights / (weights.x + weights.y + weights.z);
+  // Get the sign (-1 or 1) of the surface normal
+  vec3 axis = sign(normal);
+  // Construct tangent to world matrices for each axis
+  vec3 tangentX = normalize(cross(normal, vec3(0.0, axis.x, 0.0)));
+  vec3 bitangentX = normalize(cross(tangentX, normal)) * axis.x;
+  mat3 tbnX = mat3(tangentX, bitangentX, normal);
+  vec3 tangentY = normalize(cross(normal, vec3(0.0, 0.0, axis.y)));
+  vec3 bitangentY = normalize(cross(tangentY, normal)) * axis.y;
+  mat3 tbnY = mat3(tangentY, bitangentY, normal);
+  vec3 tangentZ = normalize(cross(normal, vec3(0.0, -axis.z, 0.0)));
+  vec3 bitangentZ = normalize(-cross(tangentZ, normal)) * axis.z;
+  mat3 tbnZ = mat3(tangentZ, bitangentZ, normal);
+  // Apply tangent to world matrix and triblend
+  // Using clamp() because the cross products may be NANs
+  vec3 worldNormal = normalize(
+      clamp(tbnX * tx, -1.0, 1.0) * weights.x +
+      clamp(tbnY * ty, -1.0, 1.0) * weights.y +
+      clamp(tbnZ * tz, -1.0, 1.0) * weights.z
+      );
+  return vec4(worldNormal, 0.0);
+}
+
+
+float DistributionGGX(vec3 N, vec3 H, float roughness)
+{
+    float a = roughness*roughness;
+    float a2 = a*a;
+    float NdotH = max(dot(N, H), 0.0);
+    float NdotH2 = NdotH*NdotH;
+
+    float nom   = a2;
+    float denom = (NdotH2 * (a2 - 1.0) + 1.0);
+    denom = PI * denom * denom;
+
+    return nom / max(denom, 0.001); // prevent divide by zero for roughness=0.0 and NdotH=1.0
+}
+// ----------------------------------------------------------------------------
+float GeometrySchlickGGX(float NdotV, float roughness)
+{
+    float r = (roughness + 1.0);
+    float k = (r*r) / 8.0;
+
+    float nom   = NdotV;
+    float denom = NdotV * (1.0 - k) + k;
+
+    return nom / denom;
+}
+// ----------------------------------------------------------------------------
+float GeometrySmith(vec3 N, vec3 V, vec3 L, float roughness)
+{
+    float NdotV = max(dot(N, V), 0.0);
+    float NdotL = max(dot(N, L), 0.0);
+    float ggx2 = GeometrySchlickGGX(NdotV, roughness);
+    float ggx1 = GeometrySchlickGGX(NdotL, roughness);
+
+    return ggx1 * ggx2;
+}
+// ----------------------------------------------------------------------------
+vec3 fresnelSchlick(float cosTheta, vec3 F0)
+{
+    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+}
+// ----------------------------------------------------------------------------
+
+
+void main(void){
+    gl_FragDepth = log2(logz) * 0.5 * Fcoef;
+    float height = length(outWorldPosition2.xyz - planetPos) - radius;
+    float upDot = dot(normalize(outWorldPosition2.xyz - planetPos), surfaceNormal);
+    float tSlice;
+        if(height > 2000){
+            if(upDot > 0.8){
+                tSlice =  11;
+            }
+            else{
+                tSlice = 8;
+            }
+        }
+        else {
+            if(upDot > 0.5){
+                tSlice = mainTexID;
+            }
+            else{
+                tSlice = 8;
+            }
+        }
+
+
+    if(tSlice == 14){
+        out_Colour = vec4(1,1,1,1);
+        return;
+    }
+
+    float roughness = _Triplanar_UV(outWorldPosition.xyz, surfaceNormal, tSlice, roughnessArray).r;
+
+    vec3 unitVectorToCamera = normalize(toCameraVector);
+    vec3 unitNormal = _TriplanarN_UV(outWorldPosition.xyz, surfaceNormal, tSlice, normalMapArray).xyz;
+
+    vec3 unitLightVector = normalize(toLightVector);
+
+    vec3 albedo = _Triplanar_UV(outWorldPosition.xyz, surfaceNormal,tSlice, texArray).rgb;
+    float ao = _Triplanar_UV(outWorldPosition.xyz, surfaceNormal, tSlice, occlusionArray).r;
+
+    float metallic = _Triplanar_UV(outWorldPosition.xyz, surfaceNormal, tSlice, metalArray).r;
+
+    float blend = saturate(length(vVSPos) / 1000.0);
+
+    vec3 N = mix(normalize(unitNormal.xyz), surfaceNormal, blend);
+    vec3 V = normalize(cameraPos - outWorldPosition2.xyz);
+
+    vec3 F0 = vec3(0.04);
+    F0 = mix(F0, albedo, metallic);
+
+    vec3 Lo = vec3(0.0);
+
+    vec3 L = unitLightVector;
+    vec3 H = normalize(V + L);
+    float distance = length(toLightVector);
+    float attenuation = 1;
+    vec3 radiance = lightColour * attenuation;
+
+        // Cook-Torrance BRDF
+        float NDF = DistributionGGX(N, H, roughness);
+        float G   = GeometrySmith(N, V, L, roughness);
+        vec3 F    = fresnelSchlick(clamp(dot(H, V), 0.0, 1.0), F0);
+
+        vec3 nominator    = NDF * G * F;
+        float denominator = 4 * max(dot(N, V), 0.0) * max(dot(N, L), 0.0);
+        vec3 specular = nominator / max(denominator, 0.001); // prevent divide by zero for NdotV=0.0 or NdotL=0.0
+
+        // kS is equal to Fresnel
+        vec3 kS = F;
+        // for energy conservation, the diffuse and specular light can't
+        // be above 1.0 (unless the surface emits light); to preserve this
+        // relationship the diffuse component (kD) should equal 1.0 - kS.
+        vec3 kD = vec3(1.0) - kS;
+        // multiply kD by the inverse metalness such that only non-metals
+        // have diffuse lighting, or a linear blend if partly metal (pure metals
+        // have no diffuse light).
+        kD *= 1.0 - metallic;
+
+        // scale light by NdotL
+        float NdotL = max(dot(N, L), 0.0);
+
+        // add to outgoing radiance Lo
+        Lo += (kD * albedo / PI + specular) * radiance * NdotL;  // note that we already multiplied the BRDF by the Fresnel (kS) so we won't multiply by kS again
+
+
+        vec3 ambient = vec3(0.03) * albedo * ao;
+
+        vec3 color = ambient + Lo;
+
+        // HDR tonemapping
+        color = color / (color + vec3(1.0));
+        // gamma correct
+        color = pow(color, vec3(1.0/2.2));
+
+        out_Colour = vec4(color, 1);
+
+
+    //float brightness = dot(N,L);
+    //out_Colour *= brightness;
+
+
+    //float nDot = dot(unitNormal, unitLightVector);
+    //float brightness = max(nDot * 2, 0.3);
+
+    //float aOcc = _Triplanar_UV(outWorldPosition.xyz, surfaceNormal, 2, roughnessArray).r;
+
+    //vec3 diffuse = brightness * lightColour;
+
+
+    //vec3 lightDirection = -unitLightVector;
+    //vec3 reflectedLightDirection = reflect(lightDirection, unitNormal);
+
+    //float specularFactor = dot(reflectedLightDirection, unitVectorToCamera);
+
+    //specularFactor = max(specularFactor, 0.3);
+    //float dampedFactor = pow(specularFactor, 50);
+    //float reflectivity = 1;
+    //vec3 finalSpecular = dampedFactor * reflectivity *  lightColour;
+
+    //vec4 colour = _Triplanar_UV(outWorldPosition.xyz, surfaceNormal, 2, texArray);
+    //colour = colour * aOcc;
+    ////vec4 colour = texture(texArray, vec3(outTexCoord.xy, 0));
+
+    //out_Colour = vec4(diffuse, 1.0) * colour + vec4(finalSpecular, 1.0);
+
+    ////out_Colour = mix(vec4(skyColour, 1.0), out_Colour, visibility);
+
+}

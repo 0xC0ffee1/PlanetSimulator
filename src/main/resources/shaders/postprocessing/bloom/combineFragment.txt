@@ -1,0 +1,33 @@
+#version 150
+
+in vec2 textureCoords;
+
+out vec4 out_Colour;
+
+uniform sampler2D colourTexture;
+uniform sampler2D highlightTexture;
+
+vec3 vignette(vec3 color){
+    float dist = distance(textureCoords.st, vec2(0.5)) * 2.0;
+    dist /= 1.5142;
+    dist = pow(dist, 1.1);
+    return color.rgb * (1.0 - dist);
+}
+
+vec3 convertToHDR(vec3 color){
+    vec3 hdrImage;
+
+    vec3 overExposed = color * 1.2;
+    vec3 underExposed = color / 1.5;
+
+    hdrImage = mix(underExposed, overExposed, color);
+    return hdrImage;
+}
+
+
+void main(void){
+    vec4 sceneColour = texture(colourTexture, textureCoords);
+    vec4 highlightColour = texture(highlightTexture, textureCoords);
+    out_Colour = sceneColour + highlightColour;
+    out_Colour.rgb = convertToHDR(out_Colour.rgb);
+}
